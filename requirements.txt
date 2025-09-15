@@ -1,0 +1,9 @@
+flask==3.0.0
+langchain-openai==0.1.0
+sentence-transformers==2.7.0
+faiss-cpu==1.8.0
+pdfplumber==0.10.4
+PyMuPDF==1.24.0
+numpy==1.26.0
+pandas==2.2.0
+requests==2.32.0
