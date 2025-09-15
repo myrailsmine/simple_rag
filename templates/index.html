@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF RAG Chatbot</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>PDF RAG Expert</h1>
+            <p>Upload a PDF and ask questions like Grok.</p>
+        </header>
+        <div class="upload-section">
+            <input type="file" id="pdfUpload" accept=".pdf">
+            <button onclick="uploadPDF()">Index PDF</button>
+        </div>
+        <div class="chat-container">
+            <div id="thinking-panel" class="thinking-panel hidden">
+                <h3>🧠 Thinking Process</h3>
+                <ul id="thinking-steps"></ul>
+            </div>
+            <div id="chat-messages" class="messages"></div>
+            <div class="input-section">
+                <input type="text" id="queryInput" placeholder="Ask about the PDF... (e.g., explain GIRR calculation)" onkeypress="handleKeyPress(event)">
+                <button onclick="sendQuery()">Send</button>
+            </div>
+        </div>
+    </div>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
