@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Enhanced PDF Table & Mathematical Formula Extraction Chatbot
-Now with LLM and Vision Model integration for superior performance
+Fixed PDF Table & Mathematical Formula Extraction Chatbot
+Resolves duplicate column name issues
 """
 
 import os
@@ -47,6 +47,80 @@ class EnhancedPDFExtractor:
         self.vision_model = None
         self.connection_status = "disconnected"
     
+    def _fix_duplicate_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Fix duplicate column names by making them unique"""
+        if df.empty:
+            return df
+            
+        # Convert None values to empty strings first
+        columns = [str(col) if col is not None else '' for col in df.columns]
+        
+        # Create unique column names
+        seen = {}
+        unique_columns = []
+        
+        for col in columns:
+            # Handle empty or None columns
+            if col == '' or col == 'None':
+                col = f'Column'
+            
+            # Make unique by adding counter if duplicate
+            if col in seen:
+                seen[col] += 1
+                unique_columns.append(f"{col}_{seen[col]}")
+            else:
+                seen[col] = 0
+                unique_columns.append(col)
+        
+        df.columns = unique_columns
+        return df
+    
+    def _clean_table_data(self, table_data: List[List]) -> pd.DataFrame:
+        """Clean and structure table data with proper column handling"""
+        if not table_data or len(table_data) < 2:
+            return pd.DataFrame()
+        
+        # Get headers from first row, handle None values
+        headers = table_data[0] if table_data[0] else []
+        
+        # Clean headers
+        cleaned_headers = []
+        for i, header in enumerate(headers):
+            if header is None or str(header).strip() == '':
+                cleaned_headers.append(f'Column_{i+1}')
+            else:
+                cleaned_headers.append(str(header).strip())
+        
+        # If no headers or all empty, create default headers
+        if not cleaned_headers:
+            max_cols = max(len(row) for row in table_data[1:]) if len(table_data) > 1 else 0
+            cleaned_headers = [f'Column_{i+1}' for i in range(max_cols)]
+        
+        # Create DataFrame from data rows
+        try:
+            df = pd.DataFrame(table_data[1:], columns=cleaned_headers)
+            
+            # Clean the data
+            df = df.replace('', np.nan)  # Replace empty strings with NaN
+            df = df.dropna(how='all')  # Drop completely empty rows
+            df = df.dropna(axis=1, how='all')  # Drop completely empty columns
+            
+            # Fix any remaining duplicate columns
+            df = self._fix_duplicate_columns(df)
+            
+            return df
+            
+        except Exception as e:
+            print(f"Error creating DataFrame: {e}")
+            # Fallback: create with default columns
+            max_cols = max(len(row) for row in table_data) if table_data else 1
+            default_columns = [f'Column_{i+1}' for i in range(max_cols)]
+            try:
+                df = pd.DataFrame(table_data[1:], columns=default_columns[:len(table_data[1]) if len(table_data) > 1 else max_cols])
+                return self._fix_duplicate_columns(df)
+            except:
+                return pd.DataFrame()
+    
     def setup_llm_connection(self, config: Dict) -> bool:
         """Setup LangChain ChatOpenAI connection"""
         try:
@@ -73,14 +147,16 @@ class EnhancedPDFExtractor:
                 return False
                 
         except Exception as e:
-            st.error(f"LLM Connection Error: {str(e)}")
+            if 'st' in globals():
+                st.error(f"LLM Connection Error: {str(e)}")
+            else:
+                print(f"LLM Connection Error: {str(e)}")
             self.connection_status = "disconnected"
             return False
     
     def setup_vision_model(self, config: Dict) -> bool:
         """Setup vision model connection for image analysis"""
         try:
-            # For vision model, we'll use the same endpoint but with vision capabilities
             self.vision_model = {
                 'base_url': config.get('vision_base_url', config.get('base_url', "http://localhost:8123/v1")),
                 'api_key': config.get('vision_api_key', config.get('api_key', "dummy")),
@@ -89,7 +165,10 @@ class EnhancedPDFExtractor:
             }
             return True
         except Exception as e:
-            st.error(f"Vision Model Setup Error: {str(e)}")
+            if 'st' in globals():
+                st.error(f"Vision Model Setup Error: {str(e)}")
+            else:
+                print(f"Vision Model Setup Error: {str(e)}")
             return False
     
     def extract_tables_with_llm(self, pdf_path: str) -> List[Dict]:
@@ -111,14 +190,15 @@ class EnhancedPDFExtractor:
     
     def _enhance_table_with_llm(self, table: Dict) -> Dict:
         """Use LLM to enhance table understanding"""
-        table_text = table['data'].to_string()
-        
-        prompt = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(
-                "You are an expert at analyzing tabular data. Analyze the following table and provide insights."
-            ),
-            HumanMessagePromptTemplate.from_template(
-                """Analyze this table and provide:
+        try:
+            table_text = table['data'].to_string()
+            
+            prompt = ChatPromptTemplate.from_messages([
+                SystemMessagePromptTemplate.from_template(
+                    "You are an expert at analyzing tabular data. Analyze the following table and provide insights."
+                ),
+                HumanMessagePromptTemplate.from_template(
+                    """Analyze this table and provide:
 1. A descriptive title/summary
 2. Key insights or patterns
 3. Data types for each column
@@ -129,54 +209,64 @@ Table data:
 
 Respond in JSON format:
 {{"title": "...", "insights": "...", "column_types": {{}}, "trends": "..."}}"""
-            )
-        ])
-        
-        chain = LLMChain(llm=self.llm, prompt=prompt)
-        response = chain.run(table_text=table_text)
-        
-        try:
-            llm_analysis = json.loads(response)
-            return {
-                'llm_title': llm_analysis.get('title', ''),
-                'llm_insights': llm_analysis.get('insights', ''),
-                'llm_column_types': llm_analysis.get('column_types', {}),
-                'llm_trends': llm_analysis.get('trends', '')
-            }
-        except:
-            return {'llm_analysis': response}
+                )
+            ])
+            
+            chain = LLMChain(llm=self.llm, prompt=prompt)
+            response = chain.run(table_text=table_text)
+            
+            try:
+                llm_analysis = json.loads(response)
+                return {
+                    'llm_title': llm_analysis.get('title', ''),
+                    'llm_insights': llm_analysis.get('insights', ''),
+                    'llm_column_types': llm_analysis.get('column_types', {}),
+                    'llm_trends': llm_analysis.get('trends', '')
+                }
+            except:
+                return {'llm_analysis': response}
+        except Exception as e:
+            print(f"Error in LLM table enhancement: {e}")
+            return {}
     
     def extract_tables_pdfplumber(self, pdf_path: str) -> List[Dict]:
-        """Extract tables using pdfplumber (baseline method)"""
+        """Extract tables using pdfplumber with improved error handling"""
         tables_data = []
         
         try:
             with pdfplumber.open(pdf_path) as pdf:
                 for page_num, page in enumerate(pdf.pages):
-                    tables = page.extract_tables()
-                    
-                    for table_idx, table in enumerate(tables):
-                        if table and len(table) > 1:
-                            try:
-                                headers = table[0] if table[0] else [f"Col_{i}" for i in range(len(table[1]))]
-                                df = pd.DataFrame(table[1:], columns=headers)
-                                df = df.replace('', np.nan).dropna(how='all').dropna(axis=1, how='all')
-                                
-                                if not df.empty:
-                                    quality_score = self._calculate_table_quality(df)
+                    try:
+                        tables = page.extract_tables()
+                        
+                        for table_idx, table in enumerate(tables):
+                            if table and len(table) > 1:
+                                try:
+                                    # Use the improved table cleaning method
+                                    df = self._clean_table_data(table)
                                     
-                                    tables_data.append({
-                                        'table_id': len(tables_data),
-                                        'page': page_num + 1,
-                                        'data': df,
-                                        'quality_score': quality_score,
-                                        'row_count': len(df),
-                                        'col_count': len(df.columns),
-                                        'extraction_method': 'pdfplumber'
-                                    })
-                            except Exception as e:
-                                print(f"Error processing table on page {page_num + 1}: {e}")
-                                continue
+                                    if not df.empty and len(df.columns) > 0:
+                                        quality_score = self._calculate_table_quality(df)
+                                        
+                                        tables_data.append({
+                                            'table_id': len(tables_data),
+                                            'page': page_num + 1,
+                                            'data': df,
+                                            'quality_score': quality_score,
+                                            'row_count': len(df),
+                                            'col_count': len(df.columns),
+                                            'extraction_method': 'pdfplumber'
+                                        })
+                                        
+                                        print(f"Successfully extracted table from page {page_num + 1}")
+                                        
+                                except Exception as e:
+                                    print(f"Error processing table on page {page_num + 1}: {e}")
+                                    continue
+                    except Exception as e:
+                        print(f"Error extracting tables from page {page_num + 1}: {e}")
+                        continue
+                        
         except Exception as e:
             print(f"Error opening PDF: {e}")
         
@@ -185,52 +275,57 @@ Respond in JSON format:
     def extract_images_and_analyze(self, pdf_path: str) -> List[Dict]:
         """Extract images from PDF and analyze with vision model"""
         images_data = []
-        doc = fitz.open(pdf_path)
         
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
+        try:
+            doc = fitz.open(pdf_path)
             
-            # Extract images from page
-            image_list = page.get_images()
-            
-            for img_index, img in enumerate(image_list):
+            for page_num in range(len(doc)):
                 try:
-                    # Get image
-                    xref = img[0]
-                    pix = fitz.Pixmap(doc, xref)
+                    page = doc.load_page(page_num)
+                    image_list = page.get_images()
                     
-                    if pix.n - pix.alpha < 4:  # GRAY or RGB
-                        img_data = pix.tobytes("png")
-                        
-                        # Convert to base64 for vision model
-                        img_b64 = base64.b64encode(img_data).decode()
-                        
-                        image_info = {
-                            'page': page_num + 1,
-                            'image_id': f"img_{page_num}_{img_index}",
-                            'size': (pix.width, pix.height),
-                            'image_data': img_b64
-                        }
-                        
-                        # Analyze with vision model if available
-                        if self.vision_model and self.vision_model.get('enabled'):
-                            vision_analysis = self._analyze_image_with_vision(img_b64)
-                            image_info.update(vision_analysis)
-                        
-                        images_data.append(image_info)
-                    
-                    pix = None
+                    for img_index, img in enumerate(image_list):
+                        try:
+                            xref = img[0]
+                            pix = fitz.Pixmap(doc, xref)
+                            
+                            if pix.n - pix.alpha < 4:  # GRAY or RGB
+                                img_data = pix.tobytes("png")
+                                img_b64 = base64.b64encode(img_data).decode()
+                                
+                                image_info = {
+                                    'page': page_num + 1,
+                                    'image_id': f"img_{page_num}_{img_index}",
+                                    'size': (pix.width, pix.height),
+                                    'image_data': img_b64
+                                }
+                                
+                                # Analyze with vision model if available
+                                if self.vision_model and self.vision_model.get('enabled'):
+                                    vision_analysis = self._analyze_image_with_vision(img_b64)
+                                    image_info.update(vision_analysis)
+                                
+                                images_data.append(image_info)
+                            
+                            pix = None
+                            
+                        except Exception as e:
+                            print(f"Error processing image {img_index} on page {page_num + 1}: {e}")
+                            
                 except Exception as e:
-                    print(f"Error processing image on page {page_num + 1}: {e}")
+                    print(f"Error processing images on page {page_num + 1}: {e}")
+            
+            doc.close()
+            
+        except Exception as e:
+            print(f"Error in image extraction: {e}")
         
-        doc.close()
         self.extracted_content['images'] = images_data
         return images_data
     
     def _analyze_image_with_vision(self, image_b64: str) -> Dict:
         """Analyze image using vision model"""
         try:
-            # Prepare vision model request
             vision_prompt = """Analyze this image from a PDF document. Identify:
 1. Type of content (table, chart, diagram, formula, etc.)
 2. Key information or data visible
@@ -240,7 +335,6 @@ Respond in JSON format:
 Respond in JSON format:
 {"content_type": "...", "description": "...", "extracted_text": "...", "insights": "..."}"""
             
-            # Make request to vision model endpoint
             response = requests.post(
                 f"{self.vision_model['base_url']}/chat/completions",
                 headers={
@@ -283,11 +377,9 @@ Respond in JSON format:
     
     def extract_mathematical_content_with_llm(self, pdf_path: str) -> List[Dict]:
         """Extract mathematical content using regex + LLM enhancement"""
-        # First, use regex-based extraction
         formulas = self.extract_mathematical_content_regex(pdf_path)
         
         if self.llm and self.connection_status == "connected":
-            # Enhance with LLM analysis
             for formula_page in formulas:
                 try:
                     enhanced_formulas = self._enhance_formulas_with_llm(formula_page)
@@ -300,14 +392,15 @@ Respond in JSON format:
     
     def _enhance_formulas_with_llm(self, formula_page: Dict) -> Dict:
         """Use LLM to enhance formula understanding"""
-        formulas_text = "\n".join([f["text"] for f in formula_page['formulas']])
-        
-        prompt = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(
-                "You are a mathematics expert. Analyze mathematical formulas and equations."
-            ),
-            HumanMessagePromptTemplate.from_template(
-                """Analyze these mathematical expressions and provide:
+        try:
+            formulas_text = "\n".join([f["text"] for f in formula_page['formulas']])
+            
+            prompt = ChatPromptTemplate.from_messages([
+                SystemMessagePromptTemplate.from_template(
+                    "You are a mathematics expert. Analyze mathematical formulas and equations."
+                ),
+                HumanMessagePromptTemplate.from_template(
+                    """Analyze these mathematical expressions and provide:
 1. What each formula represents
 2. The mathematical domain/field
 3. Key variables and their likely meanings
@@ -317,67 +410,76 @@ Mathematical expressions:
 {formulas_text}
 
 Respond in JSON format with analysis for each formula."""
-            )
-        ])
-        
-        chain = LLMChain(llm=self.llm, prompt=prompt)
-        response = chain.run(formulas_text=formulas_text)
-        
-        return {'llm_math_analysis': response}
+                )
+            ])
+            
+            chain = LLMChain(llm=self.llm, prompt=prompt)
+            response = chain.run(formulas_text=formulas_text)
+            
+            return {'llm_math_analysis': response}
+        except Exception as e:
+            print(f"Error in LLM formula enhancement: {e}")
+            return {}
     
     def extract_mathematical_content_regex(self, pdf_path: str) -> List[Dict]:
-        """Extract mathematical content using regex patterns (baseline)"""
+        """Extract mathematical content using regex patterns"""
         formulas = []
-        doc = fitz.open(pdf_path)
         
-        math_patterns = {
-            'equations': [
-                r'[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*[^=\n]+',
-                r'[a-zA-Z_]\([^)]+\)\s*=\s*[^=\n]+',
-                r'\b\w+\s*=\s*\d+\.?\d*\s*[+\-*/]\s*\w+',
-            ],
-            'functions': [
-                r'\b(sin|cos|tan|cot|sec|csc|sinh|cosh|tanh)\s*\([^)]+\)',
-                r'\b(log|ln|exp|sqrt|abs)\s*\([^)]+\)',
-                r'\b(max|min|sum|prod)\s*\([^)]+\)',
-            ],
-            'integrals': [
-                r'∫[^∫]*d[a-zA-Z]',
-                r'\\int[^\\]*d[a-zA-Z]',
-            ],
-            'derivatives': [
-                r'd[a-zA-Z]/d[a-zA-Z]',
-                r'∂[a-zA-Z]/∂[a-zA-Z]',
-            ],
-            'greek_letters': [r'[αβγδεζηθικλμνξοπρστυφχψω]'],
-            'mathematical_symbols': [r'[≤≥≠≈∞∑∏∫∂√±×÷]']
-        }
-        
-        for page_num in range(len(doc)):
-            page = doc.load_page(page_num)
-            page_text = page.get_text()
+        try:
+            doc = fitz.open(pdf_path)
             
-            page_formulas = []
-            for category, patterns in math_patterns.items():
-                for pattern in patterns:
-                    matches = re.finditer(pattern, page_text, re.IGNORECASE)
-                    for match in matches:
-                        formula_text = match.group().strip()
-                        if len(formula_text) > 2:
-                            page_formulas.append({
-                                'text': formula_text,
-                                'category': category,
-                                'confidence': self._calculate_formula_confidence(formula_text, category)
-                            })
+            math_patterns = {
+                'equations': [
+                    r'[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*[^=\n]+',
+                    r'[a-zA-Z_]\([^)]+\)\s*=\s*[^=\n]+',
+                    r'\b\w+\s*=\s*\d+\.?\d*\s*[+\-*/]\s*\w+',
+                ],
+                'functions': [
+                    r'\b(sin|cos|tan|cot|sec|csc|sinh|cosh|tanh)\s*\([^)]+\)',
+                    r'\b(log|ln|exp|sqrt|abs)\s*\([^)]+\)',
+                    r'\b(max|min|sum|prod)\s*\([^)]+\)',
+                ],
+                'integrals': [
+                    r'∫[^∫]*d[a-zA-Z]',
+                    r'\\int[^\\]*d[a-zA-Z]',
+                ],
+                'derivatives': [
+                    r'd[a-zA-Z]/d[a-zA-Z]',
+                    r'∂[a-zA-Z]/∂[a-zA-Z]',
+                ],
+                'greek_letters': [r'[αβγδεζηθικλμνξοπρστυφχψω]'],
+                'mathematical_symbols': [r'[≤≥≠≈∞∑∏∫∂√±×÷]']
+            }
             
-            if page_formulas:
-                formulas.append({
-                    'page': page_num + 1,
-                    'formulas': page_formulas,
-                    'extraction_method': 'regex_patterns'
-                })
+            for page_num in range(len(doc)):
+                page = doc.load_page(page_num)
+                page_text = page.get_text()
+                
+                page_formulas = []
+                for category, patterns in math_patterns.items():
+                    for pattern in patterns:
+                        matches = re.finditer(pattern, page_text, re.IGNORECASE)
+                        for match in matches:
+                            formula_text = match.group().strip()
+                            if len(formula_text) > 2:
+                                page_formulas.append({
+                                    'text': formula_text,
+                                    'category': category,
+                                    'confidence': self._calculate_formula_confidence(formula_text, category)
+                                })
+                
+                if page_formulas:
+                    formulas.append({
+                        'page': page_num + 1,
+                        'formulas': page_formulas,
+                        'extraction_method': 'regex_patterns'
+                    })
+            
+            doc.close()
+            
+        except Exception as e:
+            print(f"Error in mathematical content extraction: {e}")
         
-        doc.close()
         return formulas
     
     def _calculate_table_quality(self, df: pd.DataFrame) -> float:
@@ -385,30 +487,45 @@ Respond in JSON format with analysis for each formula."""
         if df.empty:
             return 0.0
         
-        score = 0.0
-        completeness = 1 - (df.isnull().sum().sum() / (len(df) * len(df.columns)))
-        score += completeness * 0.4
-        
-        consistency = 0.0
-        for col in df.columns:
-            non_null_values = df[col].dropna()
-            if len(non_null_values) > 0:
-                try:
-                    pd.to_numeric(non_null_values)
-                    consistency += 1
-                except:
-                    consistency += 0.5
-        consistency = consistency / len(df.columns) if len(df.columns) > 0 else 0
-        score += consistency * 0.3
-        
-        size_score = min(len(df) / 20, 1.0) * min(len(df.columns) / 10, 1.0)
-        score += size_score * 0.3
-        
-        return min(score, 1.0)
+        try:
+            score = 0.0
+            
+            # Completeness score
+            total_cells = len(df) * len(df.columns)
+            if total_cells > 0:
+                null_cells = df.isnull().sum().sum()
+                completeness = 1 - (null_cells / total_cells)
+                score += completeness * 0.4
+            
+            # Consistency score
+            consistency = 0.0
+            for col in df.columns:
+                non_null_values = df[col].dropna()
+                if len(non_null_values) > 0:
+                    try:
+                        pd.to_numeric(non_null_values)
+                        consistency += 1
+                    except:
+                        consistency += 0.5
+            
+            if len(df.columns) > 0:
+                consistency = consistency / len(df.columns)
+            score += consistency * 0.3
+            
+            # Size score
+            size_score = min(len(df) / 20, 1.0) * min(len(df.columns) / 10, 1.0)
+            score += size_score * 0.3
+            
+            return min(score, 1.0)
+            
+        except Exception as e:
+            print(f"Error calculating table quality: {e}")
+            return 0.0
     
     def _calculate_formula_confidence(self, formula_text: str, category: str) -> float:
         """Calculate formula confidence score"""
         score = 0.5
+        
         if len(formula_text) > 10:
             score += 0.2
         
@@ -426,25 +543,30 @@ Respond in JSON format with analysis for each formula."""
     
     def extract_text_with_metadata(self, pdf_path: str) -> str:
         """Extract text with metadata"""
-        doc = fitz.open(pdf_path)
-        formatted_text = ""
-        
-        metadata = doc.metadata
-        self.extracted_content['metadata'] = {
-            'title': metadata.get('title', ''),
-            'author': metadata.get('author', ''),
-            'subject': metadata.get('subject', ''),
-            'creator': metadata.get('creator', ''),
-            'pages': len(doc)
-        }
-        
-        for page_num, page in enumerate(doc):
-            formatted_text += f"\n\n--- PAGE {page_num + 1} ---\n\n"
-            formatted_text += page.get_text()
-        
-        doc.close()
-        self.extracted_content['text'] = formatted_text
-        return formatted_text
+        try:
+            doc = fitz.open(pdf_path)
+            formatted_text = ""
+            
+            metadata = doc.metadata
+            self.extracted_content['metadata'] = {
+                'title': metadata.get('title', ''),
+                'author': metadata.get('author', ''),
+                'subject': metadata.get('subject', ''),
+                'creator': metadata.get('creator', ''),
+                'pages': len(doc)
+            }
+            
+            for page_num, page in enumerate(doc):
+                formatted_text += f"\n\n--- PAGE {page_num + 1} ---\n\n"
+                formatted_text += page.get_text()
+            
+            doc.close()
+            self.extracted_content['text'] = formatted_text
+            return formatted_text
+            
+        except Exception as e:
+            print(f"Error extracting text: {e}")
+            return ""
     
     def process_pdf(self, pdf_path: str, llm_config: Optional[Dict] = None, vision_config: Optional[Dict] = None) -> Dict[str, Any]:
         """Process PDF with optional LLM and vision enhancement"""
@@ -469,6 +591,7 @@ Respond in JSON format with analysis for each formula."""
         
         return self.extracted_content
 
+# Rest of the classes remain the same...
 class IntelligentChatbotWithLLM:
     """Intelligent chatbot using LLM for superior question answering"""
     
@@ -505,7 +628,10 @@ class IntelligentChatbotWithLLM:
                 return False
                 
         except Exception as e:
-            st.error(f"Chatbot LLM Connection Error: {str(e)}")
+            if 'st' in globals():
+                st.error(f"Chatbot LLM Connection Error: {str(e)}")
+            else:
+                print(f"Chatbot LLM Connection Error: {str(e)}")
             self.connection_status = "disconnected"
             return False
     
@@ -524,7 +650,7 @@ class IntelligentChatbotWithLLM:
         
         # Add enhanced table information
         for table in extracted_content.get('tables', []):
-            if 'data' in table:
+            if 'data' in table and not table['data'].empty:
                 table_df = table['data']
                 table_text = f"Table from page {table['page']}. "
                 table_text += f"Columns: {', '.join(table_df.columns.tolist())}. "
@@ -598,16 +724,13 @@ class IntelligentChatbotWithLLM:
     def answer_question_with_llm(self, question: str) -> str:
         """Answer question using LLM with retrieved context"""
         if self.llm and self.connection_status == "connected":
-            # Get relevant content
             relevant_results = self.find_relevant_content(question, top_k=5)
             
             if not relevant_results:
                 return "I couldn't find relevant information in the PDF to answer your question."
             
-            # Prepare context for LLM
             context = "\n\n".join([result['content'] for result in relevant_results])
             
-            # Create LLM prompt
             prompt = ChatPromptTemplate.from_messages([
                 SystemMessagePromptTemplate.from_template(
                     """You are an expert PDF document analyst. Answer questions based on the provided context from the PDF document. 
@@ -635,7 +758,6 @@ Answer based on the context above:"""
             
             return response
         else:
-            # Fallback to basic method
             return self.answer_question_basic(question)
     
     def answer_question_basic(self, question: str) -> str:
@@ -1002,7 +1124,10 @@ def main():
     
     # Clean up temp file
     if uploaded_file and os.path.exists("temp_upload.pdf"):
-        os.remove("temp_upload.pdf")
+        try:
+            os.remove("temp_upload.pdf")
+        except:
+            pass
 
 def demo_command_line_enhanced():
     """Enhanced command line demo with LLM integration"""
